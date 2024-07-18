@@ -6,6 +6,8 @@ from tqdm import tqdm
 import argparse
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+from myfxbook_sentiment import getSentiment
+
 
 tqdm.pandas()
 
@@ -18,7 +20,7 @@ start_date = end_date - timedelta(days=50)
 bblength=30
 bbstd=2.0
 
-def init(calculate_structure_brake, num_bars, num_engulfing_bars):
+def init(num_brake_bars, num_engulfing_bars, num_fareval_bars):
     #df = yf.Ticker("AAPL").history(period="1d", interval="5m")
     df = yf.download("USDJPY=X", start=start_date, end=end_date, interval='5m')
     df.index = df.index.tz_convert('Europe/Rome')
@@ -31,17 +33,21 @@ def init(calculate_structure_brake, num_bars, num_engulfing_bars):
     df["ATR"] = ta.atr(df.High, df.Low, df.Close, length=10)
 
     my_bbands = ta.bbands(df.Close, length=bblength, std=bbstd)
-    #my_bbands = ta.bbands(df.Close, length=15, std=1.5)
     df=df.join(my_bbands)
     df["EMATrend"] = df.progress_apply(lambda row: ema_signal(df, row.name, 10), axis=1)
     df["FSEMATrend"] = df.progress_apply(lambda row: fs_ema_signal(df, row.name, 10), axis=1)
-    df['BBStrategy'] = df.progress_apply(lambda row: bb_strategy(df, row.name, 7), axis=1)
+    df['BBStrategy'] = df.progress_apply(lambda row: bb_strategy(df, row.name), axis=1)
     
-    if calculate_structure_brake:
-        df.iloc[-num_bars:].progress_apply(lambda row: structure_brake(df, row.name), axis=1)
+    if num_brake_bars > 0:
+        df.iloc[-num_brake_bars:].progress_apply(lambda row: structure_brake(df, row.name), axis=1)
     
     if num_engulfing_bars > 0:
         df.iloc[-num_engulfing_bars:].progress_apply(lambda row: find_engulfing_candle(df, row.name), axis=1)
+
+    if num_fareval_bars > 0:
+        df.iloc[-num_fareval_bars:].progress_apply(lambda row: find_fvgap(df, row.name), axis=1)
+    
+
     
     return df
 
@@ -64,7 +70,7 @@ def ema_signal(df, current_candle, backcandles):
     else:
         return 0
 
-
+#ema signal with fast and slow ema
 def fs_ema_signal(df, current_candle, backcandles):
     current_index = df.index.get_loc(current_candle)
     start = max(0, current_index - backcandles)
@@ -78,7 +84,7 @@ def fs_ema_signal(df, current_candle, backcandles):
     else:
         return 0
 
-def bb_strategy(df, current_candle, backcandles):
+def bb_strategy(df, current_candle):
     bbl = "BBL_"+str(bblength)+"_"+str(bbstd)
     bbu = "BBU_"+str(bblength)+"_"+str(bbstd)
     if (df.Close[current_candle]<=df[bbl][current_candle]
@@ -113,6 +119,23 @@ def find_engulfing_candle(df, current_candle):
         direction = "UP" if result == 1 else "DOWN"
         engulfing_candle.append([current_candle_data.name, direction])
 
+def find_fvgap(df, current_candle):
+    current_index = df.index.get_loc(current_candle)
+    if current_index == 0:
+        return
+    current_candle_data = df.iloc[current_index]
+    previous_candle_data = df.iloc[current_index - 2]
+
+    if is_fvgap(current_candle_data, previous_candle_data):
+        engulfing_candle.append(current_candle_data.name)
+
+def is_fvgap(x,y):
+    if x["Low"] > y["High"]:
+        return True
+    if x["High"] < y["Low"]:
+        return True
+    return False
+
 def is_engulfing(current_candle_data, prev_candle_data):
     if (current_candle_data['Close'] > current_candle_data['Open'] and
         prev_candle_data['Close'] < prev_candle_data['Open'] and
@@ -134,6 +157,7 @@ def tradeInfoManual(df):
     print("BBStrategy: ", df["BBStrategy"].iloc[-1])
     print("RSI: ", df["RSI"].iloc[-1])
     print("ATR: ", df["ATR"].iloc[-1])
+    print(getSentiment("USDJPY"))
     
     if len(structure_brake_index):
         print("\nStructure Break Index:")
@@ -251,15 +275,17 @@ def plot_chart(df):
     fig.show()
 def main():
     parser = argparse.ArgumentParser(description="Trading script")
-    parser.add_argument('-b', '--brake', type=int, help="Calculate structure break index for the last N bars")
-    parser.add_argument('-e', '--engulfing', type=int, default=0, help="Calculate engulfing candles for the last N bars")
+    parser.add_argument('-b', '--brake', type=int, default=0, help="Find structure break index for the last N bars")
+    parser.add_argument('-e', '--engulfing', type=int, default=0, help="Find engulfing candles for the last N bars")
+    parser.add_argument('-f', '--fareval', type=int, default=0, help="Find the fare value gap for the last N bars")
     parser.add_argument('-c', '--chart', action='store_true', help="Display candlestick chart")
     args = parser.parse_args()
 
     os.system("clear")
     num_bars = args.brake if args.brake else 0
     num_engulfing_bars = args.engulfing if args.engulfing else 0
-    df = init(args.brake is not None, num_bars, num_engulfing_bars)
+    num_fareval_bars = args.fareval if args.fareval else 0
+    df = init(num_bars, num_engulfing_bars, num_fareval_bars)
     os.system("clear")
     tradeInfoManual(df)
 
